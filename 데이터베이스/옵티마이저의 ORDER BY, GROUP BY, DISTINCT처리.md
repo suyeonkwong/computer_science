@@ -98,7 +98,7 @@ orderby first_name;
 
 쿼리에서 ORDER BY가 사용되면 반드시 3가지 처리 방법 중 하나로 정렬된다. 아래로 갈 수록 처리 속도가 떨어지는데 옵티마이저가 정렬 처리를 위해 인덱스를 이용할 수 있는지 판단해서 인덱스를 사용할 수 있다면 Filesort는 사용하지 않고 순서대로 인덱스를 읽어서 처리한다. 그런데 인덱스를 사용할 수 없다면 WHERE조건에 일치하는 레코드를 검색해 정렬 버퍼(sort buffer)에 저장하면서 정렬을 처리한다. 
 
-1. 인덱스를 사용하는 방법
+1. **인덱스를 사용하는 방법**
     1. 반드시 ORDER BY에 명시된 컬럼이 제일 먼저 읽는 테이블에 속하고, OBDER BY의 순서대로 생성된 인덱스가 있어야 한다. 
     2. WHERE절에 첫 번째로 읽는 테이블의 컬럼에 대한 조건이 있다면 그 조건과 ORDER BY는 같은 인덱스를 사용할 수 있어야 한다. 
     
@@ -113,7 +113,7 @@ orderby first_name;
     다음으로 ADDRESS 테이블을 조인했기 때문이다. 
     ```
     
-2. 조인에서 드라이빙 테이블만 정렬
+2. **조인에서 드라이빙 테이블만 정렬**
     
     ```java
     select *
@@ -127,7 +127,7 @@ orderby first_name;
     3. 정렬된 결과를 순서대로 읽으면서 address 테이블과 조인을 수행해 최종 결과를 가져옴.
     ```
     
-3. 조인 결과를 임시 테이블로 저장 후 정렬
+3. **조인 결과를 임시 테이블로 저장 후 정렬**
     
     ```java
     select *
@@ -152,4 +152,100 @@ orderby first_name;
 
 ### GROUPBY
 
-GROUPBY절에선 사용되는 HAVING절은 필터링을 수행한다. 따라서 GROUP BY에 사용된 조건은 인덱스를 사용해서 처리될 수 없으므로 HAVING절을 튜닝하려고 인덱스를 생성하거나 다른 방법을 고민할 필요는 없다. GROUP BY절도 ORDER BY와 마찬가지로 인덱스를 사용하는 방법과 그렇지 않은 경우로 나뉜다.
+GROUPBY절에선 사용되는 HAVING절은 필터링을 수행한다. 따라서 GROUP BY에 사용된 조건은 인덱스를 사용해서 처리될 수 없으므로 HAVING절을 튜닝하려고 인덱스를 생성하거나 다른 방법을 고민할 필요는 없다. GROUP BY절도 ORDER BY와 마찬가지로 인덱스를 사용하는 방법과 그렇지 않은 경우로 나뉜다.  
+
+1. **인덱스 스캔을 사용하는 GROUP BY**
+    
+    ORDER BY의 경우와 마찬가지로 조인의 드라이빙 테이블에 속한 칼럼만 이용해 그루핑할 때 GROUP BY컬럼으로 이미 인덱스가 있다면 그 인덱스를 차례대로 읽으면서 그루핑 작업을 수행하고 그 결과로 조인을 처리한다. 이땐 이미 정렬된 인덱스를 읽는 것이므로 쿼리 실행 시점에 추가적인 정렬작업이나 임시테이블은 필요 없지만 그룹 함수의 그룹값을 처리해야 할 때는 별도로 임시 테이블이 필요할 수 있다. 
+    
+2. **루스 인덱스 스캔을 이용하는 GROUP BY**
+    1. 루스 인덱스 스캔 방식은 인덱스의 레코드를 건너뛰면서 필요한 부분만 읽어서 가져오는 것을 의미한다.
+    
+    ```java
+    EXPLAIN
+    select emp_no
+    from salaries
+    where from_date='1985-03-01'
+    group by emp_no;
+    ```
+    
+    | id | table | type | key | Extra |
+    | --- | --- | --- | --- | --- |
+    | 1 | salaries | range | primary | Using where; Using index for group-by |
+    
+    salaries테이블은 (emp_no, from_date)로 생성되어 있다고 가정하자. 해당 쿼리 문장은 where절때문에 인덱스 레인지 스캔할 수 없다. 그런데 실행계획을 살펴보면 type이 range고 group by절까지 인덱스를 사용했다는것을 알 수 있다. 
+    
+    (emp_no, from_date) 인덱스를 차례로 스캔하면서 from_date값이 일치하는지 찾는다. 루스 인덱스 스캔방식은 단일 테이블에 대해 수행되는 GROUP BY절에서만 사용할 수 있다. 
+    
+    인덱스 레인지 스캔에서는 유니크한 값이 수가 많을 수록 성능이 좋아진다. 그러나 루스 인덱스 스캔에서는 인덱스의 유니크한 값의 수가 적을수록 성능이 향상된다. 즉, ***루스 인덱스 스캔은 분포도가 좋지 않은 인덱스일수록 더 빠른 결과를 만들어낸다.*** 루스 인덱스 스캔으로 처리되는 쿼리는 별도의 임시 테이블이 필요하지 않다. 
+    
+    ```java
+    //min()과 max()이외의 집합 함수가 사용됐기 때문애 루스 인덱스 스캔은 사용 불가.
+    select col1, sum(col2) from tb_test group by col1;
+    
+    // group by에 사용된 컬럼이 인덱스 구성 컬럼의 왼쪽부터 일치하지 않기 때문에 사용 불가.
+    select col1, col2 from tb_test group by col2, col3;
+    
+    // select절의 컬럼이 group by와 일치하지 않기 때문에 사용불가
+    select col1, col3 from tb_test group by col1, col2;
+    ```
+    
+3. **임시 테이블을 사용하는 group by**
+    1. 인덱스를 전혀 사용하지 못할 때 사용하는 방식.
+    
+    ```java
+    explain
+    select e.last_name, avg(s.salary)
+    from employees e, salaries s
+    where s.emp_no = e.emp_no
+    group by e.last_name;
+    
+    //Extra : Using temporary
+    ```
+    
+    group by가 필요한 경우 내부적으로 group by 절의 컬럼들로 구성된 유니크 인덱스를 가진 임시 테이블을 만들어서 중복 제거와 집합 합수 연산을 수행한다. 그리고 조인의 결과를 한 건씩 가져와 임시 테이블에서 주복 체크를 하면서 insert update작업을 수행한다. 이땐 정렬 작업을 수행하지 않는다.
+    
+    그러나 group by와 order by가 같이 사용되면 명시적으로 정렬 작업을 실행하는데 이땐 Extra컬럼에 Using filesort도 추가된다.                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                                 
+    
+
+---
+
+### DISTINCT처리
+
+DISTINCT는 MIN(), MAX()또는 COUNT()같은 집합 함수와 함께 사용되는 경우와 집합 함수가 없는 경우 2가지로 처리된다. 
+
+1. SELECT DISTINCT…
+    
+    단순히 SELECT되는 레코드 중에서 유니크한 레코드만 가져오고자 하면 SELECT DISTINCT 형태의 쿼리 문장을 사용한다. 이 경우 GROUP BY와 동일한 방식으로 처리된다.
+    
+    ```java
+    //두 쿼리의 실행 결과는 동일하다. 
+    SELECT DISTINCT emp_no from salaries;
+    SELECT emp_no from salaries group by emp_no;
+    ```
+    
+    또 SELECT절에 사용된 DISTINCT는 조회되는 모든 컬럼에 영향을 미치기 때문에 주의해서 사용해야 한다. 아래 두 쿼리의 실행결과는 동일하다. 
+    
+    ```java
+    SELECT DISTINCT(first_name), last_name FROM employess;
+    SELECT DISTINCT first_name, last_name FROM employess;
+    ```
+    
+2. 집합 함수와 함께 사용된 DISTINCT 
+
+COUNT(), MIN, MAX()같은 함수 내에서 DISTINCT를 사용할 수 있다. 
+
+```java
+EXPLAIN 
+SELECT COUNT(DISTINCT s.salary)
+FROM employees e, salaries s
+WHERE e.emp_no = s.emp_no
+AND e.emp_no BETWEEN 100001 AND 100100;
+```
+
+| id | table | type | key | rows | Extra |
+| --- | --- | --- | --- | --- | --- |
+| 1 | e | range | primary | 100 | Using where; Using index |
+| 1 | s | ref | primary | 10 | NULL |
+
+위 쿼리는 employess와 salaries를 조인한 결과에서 salary컬럼의 값만 저장하기 위해 임시 테이블을 만들어서 사용한다.
